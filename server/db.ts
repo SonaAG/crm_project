@@ -1,10 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import initSqlJs, { Database } from 'sql.js';
-
-const DB_FILE = path.join(process.cwd(), 'crm.db');
-
-let dbInstance: Database | null = null;
 
 export interface TicketRow {
   id: number;
@@ -46,76 +41,29 @@ export interface TicketDetailResponse {
   notes: NoteRow[];
 }
 
+// Detect serverless environments (Vercel, AWS Lambda)
+const isServerless = !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NOW_REGION);
+const DB_FILE = isServerless ? path.join('/tmp', 'crm.db') : path.join(process.cwd(), 'crm.db');
+
+let dbInstance: any = null;
+let useMemoryStore = isServerless; // On Vercel, immediately use resilient memory store
+
+// In-memory tables for serverless / fallback
+let memoryTickets: TicketRow[] = [];
+let memoryNotes: NoteRow[] = [];
+let initialized = false;
+
 function persistDb() {
-  if (!dbInstance) return;
-  const data = dbInstance.export();
-  fs.writeFileSync(DB_FILE, Buffer.from(data));
-}
-
-export async function getDb(): Promise<Database> {
-  if (dbInstance) {
-    return dbInstance;
-  }
-
-  const SQL = await initSqlJs();
-
-  if (fs.existsSync(DB_FILE)) {
-    const fileBuffer = fs.readFileSync(DB_FILE);
-    dbInstance = new SQL.Database(fileBuffer);
-  } else {
-    dbInstance = new SQL.Database();
-  }
-
-  initSchema(dbInstance);
-  return dbInstance;
-}
-
-function initSchema(db: Database) {
-  // TICKETS TABLE
-  db.run(`
-    CREATE TABLE IF NOT EXISTS tickets (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id TEXT UNIQUE NOT NULL,
-      customer_name TEXT NOT NULL,
-      customer_email TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      description TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'Open',
-      priority TEXT NOT NULL DEFAULT 'Medium',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  // Ensure priority column exists if upgrading an existing db
+  if (useMemoryStore || !dbInstance) return;
   try {
-    db.run(`ALTER TABLE tickets ADD COLUMN priority TEXT NOT NULL DEFAULT 'Medium';`);
-  } catch {
-    // Column already exists
-  }
-
-  // NOTES TABLE
-  db.run(`
-    CREATE TABLE IF NOT EXISTS notes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id TEXT NOT NULL,
-      note_text TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id) ON DELETE CASCADE
-    );
-  `);
-
-  persistDb();
-
-  // Check if initial seeding is needed
-  const res = db.exec('SELECT COUNT(*) as count FROM tickets;');
-  const count = res.length > 0 && res[0].values.length > 0 ? (res[0].values[0][0] as number) : 0;
-  if (count === 0) {
-    seedInitialData(db);
+    const data = dbInstance.export();
+    fs.writeFileSync(DB_FILE, Buffer.from(data));
+  } catch (err) {
+    console.warn('[Database] Persist error (skipping write):', err);
   }
 }
 
-export function seedInitialData(db: Database) {
+function initMemoryData() {
   const seedTickets = [
     {
       ticket_id: 'TKT-001',
@@ -216,7 +164,113 @@ export function seedInitialData(db: Database) {
     }
   ];
 
-  for (const t of seedTickets) {
+  memoryTickets = seedTickets.map((t, idx) => ({
+    id: idx + 1,
+    ticket_id: t.ticket_id,
+    customer_name: t.customer_name,
+    customer_email: t.customer_email,
+    subject: t.subject,
+    description: t.description,
+    status: t.status,
+    priority: t.priority,
+    created_at: t.created_at,
+    updated_at: t.updated_at
+  }));
+
+  let noteId = 1;
+  memoryNotes = [];
+  seedTickets.forEach((t) => {
+    t.notes.forEach((text) => {
+      memoryNotes.push({
+        id: noteId++,
+        ticket_id: t.ticket_id,
+        note_text: text,
+        created_at: t.updated_at
+      });
+    });
+  });
+  initialized = true;
+}
+
+export async function getDb(): Promise<any> {
+  if (useMemoryStore) {
+    if (!initialized) initMemoryData();
+    return null;
+  }
+
+  if (dbInstance) {
+    return dbInstance;
+  }
+
+  try {
+    // Dynamic import to prevent crash in serverless/bundler environments
+    const initSqlJsModule = await import('sql.js');
+    const initSqlJs = (initSqlJsModule as any).default || initSqlJsModule;
+    const SQL = await initSqlJs();
+
+    if (fs.existsSync(DB_FILE)) {
+      const fileBuffer = fs.readFileSync(DB_FILE);
+      dbInstance = new SQL.Database(fileBuffer);
+    } else {
+      dbInstance = new SQL.Database();
+    }
+
+    initSchema(dbInstance);
+    return dbInstance;
+  } catch (err) {
+    console.warn('[Database] SQLite failed, falling back to in-memory store:', err);
+    useMemoryStore = true;
+    if (!initialized) initMemoryData();
+    return null;
+  }
+}
+
+function initSchema(db: any) {
+  // TICKETS TABLE
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id TEXT UNIQUE NOT NULL,
+      customer_name TEXT NOT NULL,
+      customer_email TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      description TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'Open',
+      priority TEXT NOT NULL DEFAULT 'Medium',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  try {
+    db.run(`ALTER TABLE tickets ADD COLUMN priority TEXT NOT NULL DEFAULT 'Medium';`);
+  } catch {
+    // Column already exists
+  }
+
+  // NOTES TABLE
+  db.run(`
+    CREATE TABLE IF NOT EXISTS notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id TEXT NOT NULL,
+      note_text TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id) ON DELETE CASCADE
+    );
+  `);
+
+  persistDb();
+
+  const res = db.exec('SELECT COUNT(*) as count FROM tickets;');
+  const count = res.length > 0 && res[0].values.length > 0 ? (res[0].values[0][0] as number) : 0;
+  if (count === 0) {
+    seedInitialData(db);
+  }
+}
+
+export function seedInitialData(db: any) {
+  initMemoryData();
+  for (const t of memoryTickets) {
     db.run(
       `INSERT INTO tickets (ticket_id, customer_name, customer_email, subject, description, status, priority, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
@@ -232,14 +286,14 @@ export function seedInitialData(db: Database) {
         t.updated_at
       ]
     );
+  }
 
-    for (const noteText of t.notes) {
-      db.run(
-        `INSERT INTO notes (ticket_id, note_text, created_at)
-         VALUES (?, ?, ?);`,
-        [t.ticket_id, noteText, t.updated_at]
-      );
-    }
+  for (const n of memoryNotes) {
+    db.run(
+      `INSERT INTO notes (ticket_id, note_text, created_at)
+       VALUES (?, ?, ?);`,
+      [n.ticket_id, n.note_text, n.created_at]
+    );
   }
 
   persistDb();
@@ -249,6 +303,19 @@ export function seedInitialData(db: Database) {
  * Generate next zero-padded ticket_id like TKT-001, TKT-002, etc.
  */
 export async function getNextTicketId(): Promise<string> {
+  if (useMemoryStore) {
+    if (!initialized) initMemoryData();
+    let maxNum = 0;
+    for (const t of memoryTickets) {
+      const match = t.ticket_id.match(/TKT-(\d+)/i);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    }
+    return `TKT-${String(maxNum + 1).padStart(3, '0')}`;
+  }
+
   const db = await getDb();
   const res = db.exec('SELECT ticket_id FROM tickets;');
   let maxNum = 0;
@@ -259,9 +326,7 @@ export async function getNextTicketId(): Promise<string> {
       const match = tid.match(/TKT-(\d+)/i);
       if (match) {
         const num = parseInt(match[1], 10);
-        if (num > maxNum) {
-          maxNum = num;
-        }
+        if (num > maxNum) maxNum = num;
       }
     }
   }
@@ -272,8 +337,6 @@ export async function getNextTicketId(): Promise<string> {
 
 /**
  * POST /api/tickets
- * Body: { customer_name, customer_email, subject, description, priority, status }
- * Returns: { ticket_id, created_at }
  */
 export async function createTicket(data: {
   customer_name: string;
@@ -283,16 +346,34 @@ export async function createTicket(data: {
   priority?: string;
   status?: string;
 }): Promise<{ ticket_id: string; created_at: string }> {
-  const db = await getDb();
   const ticketId = await getNextTicketId();
   const now = new Date().toISOString();
 
   const allowedStatuses = ['Open', 'In Progress', 'Closed'];
-  const status = data.status && allowedStatuses.includes(data.status) ? data.status : 'Open';
+  const status = (data.status && allowedStatuses.includes(data.status) ? data.status : 'Open') as 'Open' | 'In Progress' | 'Closed';
 
   const allowedPriorities = ['Low', 'Medium', 'High', 'Urgent'];
-  const priority = data.priority && allowedPriorities.includes(data.priority) ? data.priority : 'Medium';
+  const priority = (data.priority && allowedPriorities.includes(data.priority) ? data.priority : 'Medium') as 'Low' | 'Medium' | 'High' | 'Urgent';
 
+  if (useMemoryStore) {
+    if (!initialized) initMemoryData();
+    const newRow: TicketRow = {
+      id: memoryTickets.length + 1,
+      ticket_id: ticketId,
+      customer_name: data.customer_name.trim(),
+      customer_email: data.customer_email.trim(),
+      subject: data.subject.trim(),
+      description: data.description.trim(),
+      status,
+      priority,
+      created_at: now,
+      updated_at: now
+    };
+    memoryTickets.unshift(newRow);
+    return { ticket_id: ticketId, created_at: now };
+  }
+
+  const db = await getDb();
   db.run(
     `INSERT INTO tickets (ticket_id, customer_name, customer_email, subject, description, status, priority, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
@@ -319,13 +400,39 @@ export async function createTicket(data: {
 
 /**
  * GET /api/tickets
- * Query params: ?status=Open&search=customer_name (Optional)
- * Returns: [{ ticket_id, customer_name, subject, status, priority, created_at }]
  */
 export async function getTickets(options: {
   status?: string;
   search?: string;
 }): Promise<TicketListItem[]> {
+  if (useMemoryStore) {
+    if (!initialized) initMemoryData();
+    let list = [...memoryTickets];
+
+    if (options.status && options.status !== 'All') {
+      list = list.filter((t) => t.status.toLowerCase() === options.status!.toLowerCase());
+    }
+
+    if (options.search && options.search.trim().length > 0) {
+      const q = options.search.trim().toLowerCase();
+      list = list.filter(
+        (t) =>
+          t.customer_name.toLowerCase().includes(q) ||
+          t.subject.toLowerCase().includes(q) ||
+          t.ticket_id.toLowerCase().includes(q)
+      );
+    }
+
+    return list.map((t) => ({
+      ticket_id: t.ticket_id,
+      customer_name: t.customer_name,
+      subject: t.subject,
+      status: t.status,
+      priority: t.priority,
+      created_at: t.created_at
+    }));
+  }
+
   const db = await getDb();
   let query = `
     SELECT 
@@ -370,9 +477,25 @@ export async function getTickets(options: {
 
 /**
  * GET /api/tickets/{ticket_id}
- * Returns: { ticket_id, customer_name, customer_email, subject, description, status, priority, notes }
  */
 export async function getTicketById(ticketId: string): Promise<TicketDetailResponse | null> {
+  if (useMemoryStore) {
+    if (!initialized) initMemoryData();
+    const t = memoryTickets.find((item) => item.ticket_id.toLowerCase() === ticketId.toLowerCase());
+    if (!t) return null;
+    const notes = memoryNotes.filter((n) => n.ticket_id.toLowerCase() === t.ticket_id.toLowerCase());
+    return {
+      ticket_id: t.ticket_id,
+      customer_name: t.customer_name,
+      customer_email: t.customer_email,
+      subject: t.subject,
+      description: t.description,
+      status: t.status,
+      priority: t.priority,
+      notes
+    };
+  }
+
   const db = await getDb();
   const stmt = db.prepare(`SELECT * FROM tickets WHERE ticket_id = ?;`);
   stmt.bind([ticketId]);
@@ -385,7 +508,6 @@ export async function getTicketById(ticketId: string): Promise<TicketDetailRespo
   const row = stmt.getAsObject();
   stmt.free();
 
-  // Get notes for this ticket from notes table
   const notesStmt = db.prepare(`SELECT id, ticket_id, note_text, created_at FROM notes WHERE ticket_id = ? ORDER BY id ASC;`);
   notesStmt.bind([ticketId]);
   const notes: NoteRow[] = [];
@@ -414,8 +536,6 @@ export async function getTicketById(ticketId: string): Promise<TicketDetailRespo
 
 /**
  * PUT /api/tickets/{ticket_id}
- * Body: { status, priority, notes }
- * Returns: { success: true, updated_at }
  */
 export async function updateTicket(
   ticketId: string,
@@ -425,9 +545,35 @@ export async function updateTicket(
     notes?: string;
   }
 ): Promise<{ success: boolean; updated_at: string } | null> {
+  const now = new Date().toISOString();
+
+  if (useMemoryStore) {
+    if (!initialized) initMemoryData();
+    const idx = memoryTickets.findIndex((t) => t.ticket_id.toLowerCase() === ticketId.toLowerCase());
+    if (idx === -1) return null;
+
+    if (data.status && ['Open', 'In Progress', 'Closed'].includes(data.status)) {
+      memoryTickets[idx].status = data.status as 'Open' | 'In Progress' | 'Closed';
+    }
+    if (data.priority && ['Low', 'Medium', 'High', 'Urgent'].includes(data.priority)) {
+      memoryTickets[idx].priority = data.priority as 'Low' | 'Medium' | 'High' | 'Urgent';
+    }
+    memoryTickets[idx].updated_at = now;
+
+    if (data.notes && typeof data.notes === 'string' && data.notes.trim().length > 0) {
+      memoryNotes.push({
+        id: memoryNotes.length + 1,
+        ticket_id: memoryTickets[idx].ticket_id,
+        note_text: data.notes.trim(),
+        created_at: now
+      });
+    }
+
+    return { success: true, updated_at: now };
+  }
+
   const db = await getDb();
 
-  // Verify ticket exists
   const checkStmt = db.prepare(`SELECT id FROM tickets WHERE ticket_id = ?;`);
   checkStmt.bind([ticketId]);
   const exists = checkStmt.step();
@@ -437,9 +583,6 @@ export async function updateTicket(
     return null;
   }
 
-  const now = new Date().toISOString();
-
-  // Update status if valid
   if (data.status && ['Open', 'In Progress', 'Closed'].includes(data.status)) {
     db.run(`UPDATE tickets SET status = ?, updated_at = ? WHERE ticket_id = ?;`, [
       data.status,
@@ -448,7 +591,6 @@ export async function updateTicket(
     ]);
   }
 
-  // Update priority if valid
   if (data.priority && ['Low', 'Medium', 'High', 'Urgent'].includes(data.priority)) {
     db.run(`UPDATE tickets SET priority = ?, updated_at = ? WHERE ticket_id = ?;`, [
       data.priority,
@@ -461,7 +603,6 @@ export async function updateTicket(
     db.run(`UPDATE tickets SET updated_at = ? WHERE ticket_id = ?;`, [now, ticketId]);
   }
 
-  // Insert note into notes table if provided
   if (data.notes && typeof data.notes === 'string' && data.notes.trim().length > 0) {
     db.run(
       `INSERT INTO notes (ticket_id, note_text, created_at)
