@@ -13,12 +13,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Health check
+// Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'healthy' });
 });
 
-// 1. GET /api/tickets - List all tickets with optional search & status filter
+// 1. GET /api/tickets
 app.get('/api/tickets', async (req, res) => {
   try {
     await getDb();
@@ -34,7 +34,7 @@ app.get('/api/tickets', async (req, res) => {
   }
 });
 
-// 2. GET /api/tickets/stats - Summary statistics
+// 2. GET /api/tickets/stats
 app.get('/api/tickets/stats', async (req, res) => {
   try {
     await getDb();
@@ -59,7 +59,7 @@ app.get('/api/tickets/stats', async (req, res) => {
   }
 });
 
-// 3. GET /api/tickets/:id - Single ticket details
+// 3. GET /api/tickets/:id
 app.get('/api/tickets/:id', async (req, res) => {
   try {
     await getDb();
@@ -74,7 +74,7 @@ app.get('/api/tickets/:id', async (req, res) => {
   }
 });
 
-// 4. POST /api/tickets - Create ticket
+// 4. POST /api/tickets
 app.post('/api/tickets', async (req, res) => {
   try {
     await getDb();
@@ -99,7 +99,7 @@ app.post('/api/tickets', async (req, res) => {
   }
 });
 
-// 5. PUT /api/tickets/:id - Update ticket & add notes
+// 5. PUT /api/tickets/:id
 app.put('/api/tickets/:id', async (req, res) => {
   try {
     await getDb();
