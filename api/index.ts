@@ -13,27 +13,28 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Sanity check endpoints
-app.get('/api', (req, res) => res.json({ status: 'ok', service: 'SupportFlow CRM API' }));
-app.get('/api/health', (req, res) => res.json({ status: 'healthy' }));
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'healthy' });
+});
 
-// 1. GET /api/tickets - List tickets with search & status filters
+// 1. GET /api/tickets - List all tickets with optional search & status filter
 app.get('/api/tickets', async (req, res) => {
   try {
-    await getDb(); // Ensure database/memory store is ready
+    await getDb();
     const { status, search } = req.query;
     const tickets = await getTickets({
-      status: status as string,
-      search: search as string,
+      status: status ? String(status) : undefined,
+      search: search ? String(search) : undefined,
     });
     res.json(tickets);
   } catch (error: any) {
-    console.error('[API] /api/tickets error:', error);
+    console.error('[API Error /api/tickets]:', error);
     res.status(500).json({ error: error.message || 'Failed to fetch tickets' });
   }
 });
 
-// 2. GET /api/tickets/stats - Calculated metrics for counters
+// 2. GET /api/tickets/stats - Summary statistics
 app.get('/api/tickets/stats', async (req, res) => {
   try {
     await getDb();
@@ -53,7 +54,7 @@ app.get('/api/tickets/stats', async (req, res) => {
       avg_resolution_hours: 2.1
     });
   } catch (error: any) {
-    console.error('[API] /api/tickets/stats error:', error);
+    console.error('[API Error /api/tickets/stats]:', error);
     res.status(500).json({ error: error.message || 'Failed to fetch stats' });
   }
 });
@@ -68,28 +69,24 @@ app.get('/api/tickets/:id', async (req, res) => {
     }
     res.json(ticket);
   } catch (error: any) {
-    console.error('[API] /api/tickets/:id error:', error);
+    console.error('[API Error /api/tickets/:id]:', error);
     res.status(500).json({ error: error.message || 'Failed to fetch ticket' });
   }
 });
 
-// 4. POST /api/tickets - Create a new ticket
+// 4. POST /api/tickets - Create ticket
 app.post('/api/tickets', async (req, res) => {
   try {
     await getDb();
-    const { customer_name, customer_email, subject, description, priority, status, title } = req.body;
-    
-    // Support either 'subject' or 'title'
-    const finalSubject = subject || title;
-    
-    if (!customer_name || !customer_email || !finalSubject || !description) {
-      return res.status(400).json({ error: 'customer_name, customer_email, subject/title, and description are required' });
+    const { customer_name, customer_email, subject, description, priority, status } = req.body;
+    if (!customer_name || !customer_email || !subject || !description) {
+      return res.status(400).json({ error: 'Missing required ticket fields' });
     }
 
     const newTicket = await createTicket({
       customer_name,
       customer_email,
-      subject: finalSubject,
+      subject,
       description,
       priority: priority || 'Medium',
       status: status || 'Open'
@@ -97,12 +94,12 @@ app.post('/api/tickets', async (req, res) => {
 
     res.status(201).json(newTicket);
   } catch (error: any) {
-    console.error('[API] POST /api/tickets error:', error);
+    console.error('[API Error POST /api/tickets]:', error);
     res.status(500).json({ error: error.message || 'Failed to create ticket' });
   }
 });
 
-// 5. PUT /api/tickets/:id - Update status, priority, and add notes
+// 5. PUT /api/tickets/:id - Update ticket & add notes
 app.put('/api/tickets/:id', async (req, res) => {
   try {
     await getDb();
@@ -112,28 +109,8 @@ app.put('/api/tickets/:id', async (req, res) => {
     }
     res.json(updated);
   } catch (error: any) {
-    console.error('[API] PUT /api/tickets/:id error:', error);
+    console.error('[API Error PUT /api/tickets/:id]:', error);
     res.status(500).json({ error: error.message || 'Failed to update ticket' });
-  }
-});
-
-// 6. POST /api/tickets/:id/notes - Add note
-app.post('/api/tickets/:id/notes', async (req, res) => {
-  try {
-    await getDb();
-    const noteText = req.body.note_text || req.body.body || '';
-    if (!noteText.trim()) {
-      return res.status(400).json({ error: 'note_text or body is required' });
-    }
-
-    const updated = await updateTicket(req.params.id, { notes: noteText });
-    if (!updated) {
-      return res.status(404).json({ error: 'Ticket not found' });
-    }
-    res.status(201).json({ success: true, message: 'Note added' });
-  } catch (error: any) {
-    console.error('[API] POST note error:', error);
-    res.status(500).json({ error: error.message || 'Failed to add note' });
   }
 });
 
