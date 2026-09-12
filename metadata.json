@@ -1,0 +1,7 @@
+{
+  "name": "SupportFlow CRM",
+  "description": "Full-stack Customer Support Ticketing CRM web application with SQLite database, ticket triage, real-time search, and activity notes feed.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
