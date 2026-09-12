@@ -21,7 +21,7 @@ The database schema is strictly scoped to 2 relational tables without unnecessar
 | Column | Type | Constraints & Description |
 | :--- | :--- | :--- |
 | `id` | INTEGER | PRIMARY KEY AUTOINCREMENT |
-| `ticket_id` | TEXT | UNIQUE NOT NULL (auto-generated e.g. `TKT-001`, `TKT-002`) |
+| `ticket_id` | TEXT | UNIQUE NOT NULL |
 | `customer_name` | TEXT | NOT NULL |
 | `customer_email` | TEXT | NOT NULL |
 | `subject` | TEXT | NOT NULL |
@@ -34,7 +34,7 @@ The database schema is strictly scoped to 2 relational tables without unnecessar
 | Column | Type | Constraints & Description |
 | :--- | :--- | :--- |
 | `id` | INTEGER | PRIMARY KEY AUTOINCREMENT |
-| `ticket_id` | TEXT | NOT NULL (Foreign key to `tickets.ticket_id`) |
+| `ticket_id` | TEXT | NOT NULL (Foreign key) |
 | `note_text` | TEXT | NOT NULL |
 | `created_at` | DATETIME | DEFAULT CURRENT_TIMESTAMP |
 
